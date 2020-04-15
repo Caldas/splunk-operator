@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"flag"
 
 	corev1 "k8s.io/api/core/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -18,21 +19,30 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"github.com/operator-framework/operator-sdk/pkg/log/zap"
 	"github.com/onsi/ginkgo"
+	ginkgoconfig "github.com/onsi/ginkgo/config"
 	"github.com/go-logr/logr"
 
 	enterprisev1 "github.com/splunk/splunk-operator/pkg/apis/enterprise/v1alpha2"
 )
 
 const (
+	defaultOperatorImage	= "splunk/splunk-operator"
+	defaultSplunkImage		= "splunk/splunk:latest"
+	defaultSparkImage		= "splunk/spark"
+
 	// PollInterval specifies the polling interval 
 	PollInterval = 2 * time.Second
 	// DefaultTimeout is the max timeout before we failed.
-	DefaultTimeout = 10 * time.Minute
+	DefaultTimeout = 5 * time.Minute
 )
 
 var (
-	metricsHost       = "0.0.0.0"
-	metricsPort int32 = 8383
+	metricsHost       	= "0.0.0.0"
+	metricsPort int32 	= 8383
+	specifiedOperatorImage	= defaultOperatorImage
+	specifiedSplunkImage	= defaultSplunkImage
+	specifiedSparkImage		= defaultSparkImage
+	specifiedSkipTeardown	= false
 )
 
 // TestEnv represents a namespaced-isolated k8s cluster environment to run tests against
@@ -48,6 +58,7 @@ type TestEnv struct {
 	splunkImage			string
 	sparkImage			string
 	initialized			bool
+	skipTeardown		bool
 	kubeClient  		client.Client
 	Log					logr.Logger
 }
@@ -55,7 +66,12 @@ type TestEnv struct {
 
 func init() {
 	l := zap.LoggerTo(ginkgo.GinkgoWriter)
-	logf.SetLogger(l)
+	logf.SetLogger(l) 
+
+	flag.StringVar(&specifiedOperatorImage, "operator", defaultOperatorImage, "operator image to use")
+	flag.StringVar(&specifiedSplunkImage, "splunk", defaultSplunkImage, "splunk enterprise (splunkd) image to use")
+	flag.StringVar(&specifiedSparkImage, "spark", defaultSparkImage, "spark image to use")
+	flag.BoolVar(&specifiedSkipTeardown, "skip-teardown", false, "True to skip tearing down the test env after use")
 }
 
 // GetKubeClient returns the kube client to talk to kube-apiserver
@@ -65,7 +81,7 @@ func (testenv *TestEnv) GetKubeClient() client.Client {
 
 // NewDefaultTestEnv creates a default test environment
 func NewDefaultTestEnv(name string) (*TestEnv, error) {
-	return NewTestEnv(name, "splunk/splunk-operator", "splunk/splunk:latest", "splunk/spark")
+	return NewTestEnv(name, specifiedOperatorImage, specifiedSplunkImage, specifiedSparkImage)
 }
 
 // NewTestEnv creates a new test environment to run tests againsts
@@ -81,6 +97,7 @@ func NewTestEnv(name, operatorImage, splunkImage, sparkImage string) (*TestEnv, 
 		operatorImage:		operatorImage,
 		splunkImage:		splunkImage,
 		sparkImage:			sparkImage,
+		skipTeardown:		specifiedSkipTeardown,
 	}
 
 	testenv.Log = logf.Log.WithName(testenv.name)
@@ -97,7 +114,8 @@ func NewTestEnv(name, operatorImage, splunkImage, sparkImage string) (*TestEnv, 
 	testenv.kubeAPIServer = cfg.Host
 	testenv.Log.Info("Using kube-apiserver\n", "kube-apiserver", cfg.Host)
 
-	metricsAddr := fmt.Sprintf("%s:%d", metricsHost, metricsPort)
+	// 
+	metricsAddr := fmt.Sprintf("%s:%d", metricsHost, metricsPort + int32(ginkgoconfig.GinkgoConfig.ParallelNode))
 
 	kubeManager, err := manager.New(cfg, manager.Options{
 		Scheme:             scheme.Scheme,
@@ -113,13 +131,14 @@ func NewTestEnv(name, operatorImage, splunkImage, sparkImage string) (*TestEnv, 
 	}
 
 
+	// We need to start the manager to setup the cache. Otherwise, we have to
+	// use apireader instead of kubeclient when retrieving resources
 	go func() {
 		err := kubeManager.Start(signals.SetupSignalHandler())
 		if err != nil {
 			panic("Unable to start kube manager. Error: " + err.Error())
 		}
 	}()
-
 
 	testenv.Log.Info("testenv created.\n")
 	return testenv, nil
@@ -160,7 +179,7 @@ func (testenv *TestEnv) Initialize() error {
 	}
 
 	testenv.initialized = true
-	testenv.Log.Info("testenv initialized.\n")
+	testenv.Log.Info("testenv initialized.\n", "namespace", testenv.namespace, "operatorImage", testenv.operatorImage, "splunkImage", testenv.splunkImage, "sparkImage", testenv.sparkImage)
 	return nil
 }
 
@@ -168,7 +187,11 @@ func (testenv *TestEnv) Initialize() error {
 func (testenv *TestEnv) Destroy() error {
 	
 	var err error
-	
+
+	if testenv.skipTeardown {
+		return nil
+	}
+
 	testenv.initialized = false
 	err = testenv.deleteOperator()
 	if err != nil {
@@ -220,16 +243,32 @@ func (testenv *TestEnv) CreateStandalone(name string) (*enterprisev1.Standalone,
 		return nil, err
 	}
 
-	key := client.ObjectKey {Name: name, Namespace: testenv.namespace}
+	// Returns once we can retrieve the standalone instance
+	if err := wait.PollImmediate(PollInterval, DefaultTimeout, func() (bool, error) {
+		key := client.ObjectKey {Name: name, Namespace: testenv.namespace}
+		err := testenv.GetKubeClient().Get(context.TODO(), key, standalone)
+		if err != nil {
 
-	err = testenv.GetKubeClient().Get(context.TODO(), key, standalone)
-	if err != nil {
+			// Try again
+			if errors.IsNotFound(err) {
+				return false, nil 
+			}
+			return false, err
+		}
+
+		return true, nil
+	}); err != nil {
 		return nil, err
 	}
 
 	return standalone, nil
 }
 
+// DeleteStandalone deletes the standalone deployment
+func (testenv *TestEnv) DeleteStandalone(name string) error {
+	standalone := createStandaloneCR(name, testenv.namespace)
+	return testenv.GetKubeClient().Delete(context.TODO(), standalone)
+}
 
 func (testenv *TestEnv) createNamespace() error {
 
@@ -249,6 +288,10 @@ func (testenv *TestEnv) createNamespace() error {
 		ns := &corev1.Namespace{}
 		err := testenv.GetKubeClient().Get(context.TODO(), key, ns)
 		if err != nil {
+			// Try again
+			if errors.IsNotFound(err) {
+				return false, nil 
+			}
 			return false, err
 		}
 		if ns.Status.Phase == corev1.NamespaceActive {

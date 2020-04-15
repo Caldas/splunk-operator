@@ -32,7 +32,7 @@ var _ = BeforeSuite(func() {
 	testName := fmt.Sprintf("e2e-%s", testenv.RandomDNSName(6))
 
 	var err error
-	TestEnvInstance, err = testenv.NewTestEnv(testName, "splunk/splunk-operator", "localhost:5000/splunk:latest", "splunk/spark")
+	TestEnvInstance, err = testenv.NewDefaultTestEnv(testName)
 	Expect(err).ToNot(HaveOccurred())
 
 	Expect(TestEnvInstance.Initialize()).ToNot(HaveOccurred())

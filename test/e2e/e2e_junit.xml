@@ -1,4 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-  <testsuite name="E2E Suite" tests="1" failures="0" errors="0" time="38.737">
-      <testcase name="Deploy enteprise Deploys standalone instance" classname="E2E Suite" time="36.147545346"></testcase>
-  </testsuite>
