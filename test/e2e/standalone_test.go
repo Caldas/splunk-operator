@@ -17,10 +17,15 @@ const (
 	PollInterval = 2 * time.Second
 	// DefaultTimeout is the max timeout before we failed.
 	DefaultTimeout = 5 * time.Minute
+
+	// ConsistentPollInterval is the interval to use to consistently check a state is stable
+	ConsistentPollInterval = 20*time.Millisecond
+	// ConsistentDuration is the duration to use to check a state is stable
+	ConsistentDuration = 200 * time.Millisecond
 )
 
 
-var _ = Describe("Deploys standalone enterprise", func() {
+var _ = Describe("Standalone deployment", func() {
 
 	var standalone *enterprisev1.Standalone
 
@@ -57,25 +62,29 @@ var _ = Describe("Deploys standalone enterprise", func() {
 			TestEnvInstance.Log.Info("Waiting for standalone instance to be deleted", "instance", standalone.ObjectMeta.Name, "Phase", standalone.Status.Phase)
 			return false
 		}, DefaultTimeout, PollInterval).Should(BeTrue())
-
 	})
 	
-	It ("can deploy", func() {
+	When("it is deployed", func() {
+		It ("it is ready and stable state", func() {
+			Expect(standalone.Status.Phase).To(Equal(enterprisev1.PhaseReady))
 
-		Expect(standalone.Status.Phase).To(Equal(enterprisev1.PhaseReady))
-		//TODO: Add additional expectations eg service is correct, pod status is good...etc
-	})
+			strver := standalone.ObjectMeta.GetResourceVersion()
 
+			Consistently(func() string {
+				instance,_ := TestEnvInstance.GetStandalone(standalone.ObjectMeta.Name)
 
-	It ("can update volumes", func() {
-
-		Expect(standalone.Status.Phase).To(Equal(enterprisev1.PhaseReady))
-		//TODO: Add additional expectations eg service is correct, pod status is good...etc
-	})
-
-	It ("can update service", func() {
-
-		Expect(standalone.Status.Phase).To(Equal(enterprisev1.PhaseReady))
-		//TODO: Add additional expectations eg service is correct, pod status is good...etc
+				return instance.ObjectMeta.GetResourceVersion()
+			}, ConsistentDuration, ConsistentPollInterval).Should(Equal(strver))
+		})
+		
+		XIt ("we can update volumes", func() {
+			Expect(standalone.Status.Phase).To(Equal(enterprisev1.PhaseReady))
+			Expect(standalone.Status.Phase).To(Equal(enterprisev1.PhaseReady))
+		})
+	
+		XIt ("we can update service ports", func() {
+			Expect(standalone.Status.Phase).To(Equal(enterprisev1.PhaseReady))
+			Expect(standalone.Status.Phase).To(Equal(enterprisev1.PhaseReady))
+		})
 	})
 })

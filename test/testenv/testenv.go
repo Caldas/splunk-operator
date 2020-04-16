@@ -31,7 +31,7 @@ const (
 	defaultSparkImage		= "splunk/spark"
 
 	// PollInterval specifies the polling interval 
-	PollInterval = 2 * time.Second
+	PollInterval = 1 * time.Second
 	// DefaultTimeout is the max timeout before we failed.
 	DefaultTimeout = 5 * time.Minute
 )
@@ -44,6 +44,8 @@ var (
 	specifiedSparkImage		= defaultSparkImage
 	specifiedSkipTeardown	= false
 )
+
+type cleanupFunc func() error
 
 // TestEnv represents a namespaced-isolated k8s cluster environment to run tests against
 type TestEnv struct {
@@ -61,11 +63,13 @@ type TestEnv struct {
 	skipTeardown		bool
 	kubeClient  		client.Client
 	Log					logr.Logger
+	cleanupFuncs		[]cleanupFunc
 }
 
 
 func init() {
 	l := zap.LoggerTo(ginkgo.GinkgoWriter)
+	l.WithName("testenv")
 	logf.SetLogger(l) 
 
 	flag.StringVar(&specifiedOperatorImage, "operator", defaultOperatorImage, "operator image to use")
@@ -100,7 +104,7 @@ func NewTestEnv(name, operatorImage, splunkImage, sparkImage string) (*TestEnv, 
 		skipTeardown:		specifiedSkipTeardown,
 	}
 
-	testenv.Log = logf.Log.WithName(testenv.name)
+	testenv.Log = logf.Log.WithValues("testenv", testenv.name)
 
 	// Scheme
 	enterprisev1.SchemeBuilder.AddToScheme(scheme.Scheme)
@@ -151,6 +155,7 @@ func (testenv *TestEnv) GetName() string {
 
 // Initialize initializes the testenv
 func (testenv *TestEnv) Initialize() error {
+	testenv.Log.Info("testenv initializing.\n")
 
 	var err error
 	err = testenv.createNamespace()
@@ -185,37 +190,19 @@ func (testenv *TestEnv) Initialize() error {
 
 // Destroy destroy the testenv
 func (testenv *TestEnv) Destroy() error {
-	
-	var err error
 
 	if testenv.skipTeardown {
+		testenv.Log.Info("testenv teardown is skipped!\n")
 		return nil
 	}
 
 	testenv.initialized = false
-	err = testenv.deleteOperator()
-	if err != nil {
-		return err
-	}
-	
-	err = testenv.deleteRoleBinding()
-	if err != nil {
-		return err
-	}
 
-	err = testenv.deleteRole()
-	if err != nil {
-		return err
-	}
-
-	err = testenv.deleteSA()
-	if err != nil {
-		return err
-	}
-
-	err = testenv.deleteNamespace()
-	if err != nil {
-		return err
+	for fn, err := testenv.popCleanupFunc(); err == nil; fn, err = testenv.popCleanupFunc() {
+		cleanupErr := fn()
+		if cleanupErr != nil {
+			testenv.Log.Error(cleanupErr, "CleanupFunc returns an error. Attempt to continue.\n" )
+		}
 	}
 
 	testenv.Log.Info("testenv deleted.\n")
@@ -270,6 +257,21 @@ func (testenv *TestEnv) DeleteStandalone(name string) error {
 	return testenv.GetKubeClient().Delete(context.TODO(), standalone)
 }
 
+func (testenv *TestEnv) pushCleanupFunc(fn cleanupFunc) {
+	testenv.cleanupFuncs = append(testenv.cleanupFuncs, fn)
+}
+
+func (testenv *TestEnv) popCleanupFunc() (cleanupFunc, error) {
+	if len(testenv.cleanupFuncs) == 0 {
+		return nil, fmt.Errorf("cleanupFuncs is empty")
+	}
+
+	fn := testenv.cleanupFuncs[len(testenv.cleanupFuncs)-1]
+	testenv.cleanupFuncs = testenv.cleanupFuncs[:len(testenv.cleanupFuncs) -1]
+
+	return fn, nil
+}
+
 func (testenv *TestEnv) createNamespace() error {
 
 	namespace := &corev1.Namespace{
@@ -282,6 +284,32 @@ func (testenv *TestEnv) createNamespace() error {
 	if err != nil {
 		return err
 	}
+
+	// Cleanup the namespace when we teardown this testenv
+	testenv.pushCleanupFunc(func() error {
+		testenv.Log.Info("Deleting namespace")
+		err := testenv.GetKubeClient().Delete(context.TODO(), namespace)
+		if err != nil {
+			return err
+		}	
+		if err = wait.PollImmediate(PollInterval, DefaultTimeout, func() (bool, error) {
+			key := client.ObjectKey {Name: testenv.namespace, Namespace: testenv.namespace}
+			ns := &corev1.Namespace{}
+			err := testenv.GetKubeClient().Get(context.TODO(), key, ns)
+			if errors.IsNotFound(err) {
+				return true, nil 
+			}
+			if ns.Status.Phase == corev1.NamespaceTerminating{
+				return false, nil
+			}
+			
+			return true, nil
+		}); err != nil {
+			return err
+		}
+	
+		return nil
+	})
 
 	if err := wait.PollImmediate(PollInterval, DefaultTimeout, func() (bool, error) {
 		key := client.ObjectKey {Name: testenv.namespace }
@@ -306,38 +334,7 @@ func (testenv *TestEnv) createNamespace() error {
 	return nil
 }
 
-func (testenv *TestEnv) deleteNamespace() error {
-	namespace := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:    testenv.namespace,
-		},
-	}
-
-	err := testenv.GetKubeClient().Delete(context.TODO(), namespace)
-	if err != nil {
-		return err
-	}	
-	if err = wait.PollImmediate(PollInterval, DefaultTimeout, func() (bool, error) {
-		key := client.ObjectKey {Name: testenv.namespace, Namespace: testenv.namespace}
-		ns := &corev1.Namespace{}
-		err := testenv.GetKubeClient().Get(context.TODO(), key, ns)
-		if errors.IsNotFound(err) {
-			return true, nil 
-		}
-		if ns.Status.Phase == corev1.NamespaceTerminating{
-			return false, nil
-		}
-		
-		return true, nil
-	}); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func (testenv *TestEnv) createSA() error {
-
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:    testenv.serviceAccountName,
@@ -349,21 +346,16 @@ func (testenv *TestEnv) createSA() error {
 	if err != nil {
 		return err
 	}
-	return nil
-}
 
-func (testenv *TestEnv) deleteSA() error {
-	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:    testenv.serviceAccountName,
-			Namespace: testenv.namespace,
-		},
-	}
+	testenv.pushCleanupFunc(func() error {
+		testenv.Log.Info("Deleting SA")
+		err := testenv.GetKubeClient().Delete(context.TODO(), sa)
+		if err != nil {
+			return err
+		}
+		return nil		
+	})
 
-	err := testenv.GetKubeClient().Delete(context.TODO(), sa)
-	if err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -374,19 +366,18 @@ func (testenv *TestEnv) createRole() error {
 	if err != nil {
 		return err
 	}
+
+	testenv.pushCleanupFunc(func() error {
+		testenv.Log.Info("Deleting Role")
+		err := testenv.GetKubeClient().Delete(context.TODO(), role)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+
 	return nil
 }
-
-func (testenv *TestEnv) deleteRole() error {
-	role := createRole(testenv.roleName, testenv.namespace)
-
-	err := testenv.GetKubeClient().Delete(context.TODO(), role)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
 
 func (testenv *TestEnv) createRoleBinding() error {
 	binding := createRoleBinding(testenv.roleBindingName, testenv.serviceAccountName, testenv.namespace, testenv.roleName)
@@ -395,16 +386,16 @@ func (testenv *TestEnv) createRoleBinding() error {
 	if err != nil {
 		return err
 	}
-	return nil
-}
 
-func (testenv *TestEnv) deleteRoleBinding() error {
-	binding := createRoleBinding(testenv.roleBindingName, testenv.serviceAccountName, testenv.namespace, testenv.roleName)
+	testenv.pushCleanupFunc(func() error {
+		testenv.Log.Info("Deleting RoleBinding")
+		err := testenv.GetKubeClient().Delete(context.TODO(), binding)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
 
-	err := testenv.GetKubeClient().Delete(context.TODO(), binding)
-	if err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -414,6 +405,15 @@ func (testenv *TestEnv) createOperator() error {
 	if err != nil {
 		return err
 	}
+
+	testenv.pushCleanupFunc(func() error {
+		testenv.Log.Info("Deleting Operator")
+		err := testenv.GetKubeClient().Delete(context.TODO(), op)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
 
 	if err := wait.PollImmediate(PollInterval, DefaultTimeout, func() (bool, error) {
 		key := client.ObjectKey {Name: testenv.operatorName, Namespace: testenv.namespace }
@@ -433,15 +433,6 @@ func (testenv *TestEnv) createOperator() error {
 		
 		return true, nil
 	}); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (testenv *TestEnv) deleteOperator() error {
-	op := createOperator(testenv.operatorName, testenv.namespace, testenv.serviceAccountName, testenv.operatorImage, testenv.splunkImage, testenv.sparkImage)
-	err := testenv.GetKubeClient().Delete(context.TODO(), op)
-	if err != nil {
 		return err
 	}
 	return nil
