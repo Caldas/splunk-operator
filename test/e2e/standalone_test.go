@@ -34,7 +34,7 @@ var _ = Describe("Standalone deployment", func() {
 		Expect(err).To(Succeed(), "Unable to create deployment")
 
 		standalone, err = deployment.DeployStandalone(deployment.GetName())
-		Expect(err).To(Succeed(), "Unable to create standalone instance - "+standalone.ObjectMeta.Name)
+		Expect(err).To(Succeed(), "Unable to create standalone instance ")
 
 		Eventually(func() enterprisev1.ResourcePhase {
 			standalone, err = deployment.GetStandalone(standalone.ObjectMeta.Name)

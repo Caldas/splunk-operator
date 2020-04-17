@@ -43,6 +43,7 @@ var (
 	specifiedSplunkImage         = defaultSplunkImage
 	specifiedSparkImage          = defaultSparkImage
 	specifiedSkipTeardown        = false
+	specifiedLicenseFilePath	 = ""	
 )
 
 type cleanupFunc func() error
@@ -61,6 +62,8 @@ type TestEnv struct {
 	sparkImage         string
 	initialized        bool
 	skipTeardown       bool
+	licenseFilePath		string
+	licenseCMName		string
 	kubeClient         client.Client
 	Log                logr.Logger
 	cleanupFuncs       []cleanupFunc
@@ -71,9 +74,10 @@ func init() {
 	l.WithName("testenv")
 	logf.SetLogger(l)
 
-	flag.StringVar(&specifiedOperatorImage, "operator-image", defaultOperatorImage, "operator image to use")
-	flag.StringVar(&specifiedSplunkImage, "splunk-image", defaultSplunkImage, "splunk enterprise (splunkd) image to use")
-	flag.StringVar(&specifiedSparkImage, "spark-image", defaultSparkImage, "spark image to use")
+	flag.StringVar(&specifiedLicenseFilePath, "license-file", "" , "Enterprise license file to use")
+	flag.StringVar(&specifiedOperatorImage, "operator-image", defaultOperatorImage, "Splunk Operator image to use")
+	flag.StringVar(&specifiedSplunkImage, "splunk-image", defaultSplunkImage, "Splunk Enterprise (splunkd) image to use")
+	flag.StringVar(&specifiedSparkImage, "spark-image", defaultSparkImage, "Spark image to use")
 	flag.BoolVar(&specifiedSkipTeardown, "skip-teardown", false, "True to skip tearing down the test env after use")
 }
 
@@ -84,11 +88,11 @@ func (testenv *TestEnv) GetKubeClient() client.Client {
 
 // NewDefaultTestEnv creates a default test environment
 func NewDefaultTestEnv(name string) (*TestEnv, error) {
-	return NewTestEnv(name, specifiedOperatorImage, specifiedSplunkImage, specifiedSparkImage)
+	return NewTestEnv(name, specifiedOperatorImage, specifiedSplunkImage, specifiedSparkImage, specifiedLicenseFilePath)
 }
 
 // NewTestEnv creates a new test environment to run tests againsts
-func NewTestEnv(name, operatorImage, splunkImage, sparkImage string) (*TestEnv, error) {
+func NewTestEnv(name, operatorImage, splunkImage, sparkImage, licenseFilePath string) (*TestEnv, error) {
 
 	testenv := &TestEnv{
 		name:               name,
@@ -101,6 +105,8 @@ func NewTestEnv(name, operatorImage, splunkImage, sparkImage string) (*TestEnv, 
 		splunkImage:        splunkImage,
 		sparkImage:         sparkImage,
 		skipTeardown:       specifiedSkipTeardown,
+		licenseCMName:		"cm-" + name,
+		licenseFilePath:	licenseFilePath,
 	}
 
 	testenv.Log = logf.Log.WithValues("testenv", testenv.name)
@@ -184,6 +190,12 @@ func (testenv *TestEnv) setup() error {
 		return err
 	}
 
+	if testenv.licenseFilePath != "" {
+		err = testenv.createLicenseConfigMap()
+		if err != nil {
+			return err
+		}
+	}
 	testenv.initialized = true
 	testenv.Log.Info("testenv initialized.\n", "namespace", testenv.namespace, "operatorImage", testenv.operatorImage, "splunkImage", testenv.splunkImage, "sparkImage", testenv.sparkImage)
 	return nil
@@ -316,7 +328,7 @@ func (testenv *TestEnv) createSA() error {
 }
 
 func (testenv *TestEnv) createRole() error {
-	role := createRole(testenv.roleName, testenv.namespace)
+	role := newRole(testenv.roleName, testenv.namespace)
 
 	err := testenv.GetKubeClient().Create(context.TODO(), role)
 	if err != nil {
@@ -337,7 +349,7 @@ func (testenv *TestEnv) createRole() error {
 }
 
 func (testenv *TestEnv) createRoleBinding() error {
-	binding := createRoleBinding(testenv.roleBindingName, testenv.serviceAccountName, testenv.namespace, testenv.roleName)
+	binding := newRoleBinding(testenv.roleBindingName, testenv.serviceAccountName, testenv.namespace, testenv.roleName)
 
 	err := testenv.GetKubeClient().Create(context.TODO(), binding)
 	if err != nil {
@@ -358,7 +370,7 @@ func (testenv *TestEnv) createRoleBinding() error {
 }
 
 func (testenv *TestEnv) createOperator() error {
-	op := createOperator(testenv.operatorName, testenv.namespace, testenv.serviceAccountName, testenv.operatorImage, testenv.splunkImage, testenv.sparkImage)
+	op := newOperator(testenv.operatorName, testenv.namespace, testenv.serviceAccountName, testenv.operatorImage, testenv.splunkImage, testenv.sparkImage)
 	err := testenv.GetKubeClient().Create(context.TODO(), op)
 	if err != nil {
 		testenv.Log.Error(err, "Unable to create operator")
@@ -397,6 +409,30 @@ func (testenv *TestEnv) createOperator() error {
 	}
 	return nil
 }
+
+func (testenv *TestEnv) createLicenseConfigMap() error {
+	lic, err := newLicenseConfigMap(testenv.licenseCMName, testenv.namespace, testenv.licenseFilePath)
+	if err != nil {
+		return err
+	}	
+	if err := testenv.GetKubeClient().Create(context.TODO(), lic); err != nil {
+		testenv.Log.Error(err, "Unable to create license configmap")
+		return err
+	}
+
+	testenv.pushCleanupFunc(func() error {
+		err := testenv.GetKubeClient().Delete(context.TODO(), lic)
+		if err != nil {
+			testenv.Log.Error(err, "Unable to delete license configmap ")
+			return err
+		}
+		return nil
+	})
+	
+	return nil
+}
+
+
 
 // NewDeployment creates a new deployment
 func (testenv *TestEnv) NewDeployment(name string) (*Deployment, error) {
