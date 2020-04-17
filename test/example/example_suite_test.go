@@ -1,7 +1,9 @@
-package e2e
+package example
 
 import (
+	"math/rand"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	"github.com/onsi/ginkgo/reporters"
@@ -12,11 +14,14 @@ import (
 
 var (
 	testenvInstance *testenv.TestEnv
-	testSuiteName   = "e2e-suite-" + testenv.RandomDNSName(6)
+	testSuiteName   = "example-suite-" + testenv.RandomDNSName(6)
 )
 
-// TestE2e is the main entry point
-func TestE2e(t *testing.T) {
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
+func TestExampleSuite(t *testing.T) {
 
 	RegisterFailHandler(Fail)
 
@@ -32,5 +37,4 @@ var _ = BeforeSuite(func() {
 
 var _ = AfterSuite(func() {
 	Expect(testenvInstance.Teardown()).ToNot(HaveOccurred())
-
 })
