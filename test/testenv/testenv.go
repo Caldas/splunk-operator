@@ -37,13 +37,13 @@ const (
 )
 
 var (
-	metricsHost                  = "0.0.0.0"
-	metricsPort            int32 = 8383
-	specifiedOperatorImage       = defaultOperatorImage
-	specifiedSplunkImage         = defaultSplunkImage
-	specifiedSparkImage          = defaultSparkImage
-	specifiedSkipTeardown        = false
-	specifiedLicenseFilePath	 = ""	
+	metricsHost                    = "0.0.0.0"
+	metricsPort              int32 = 8383
+	specifiedOperatorImage         = defaultOperatorImage
+	specifiedSplunkImage           = defaultSplunkImage
+	specifiedSparkImage            = defaultSparkImage
+	specifiedSkipTeardown          = false
+	specifiedLicenseFilePath       = ""
 )
 
 type cleanupFunc func() error
@@ -62,8 +62,8 @@ type TestEnv struct {
 	sparkImage         string
 	initialized        bool
 	skipTeardown       bool
-	licenseFilePath		string
-	licenseCMName		string
+	licenseFilePath    string
+	licenseCMName      string
 	kubeClient         client.Client
 	Log                logr.Logger
 	cleanupFuncs       []cleanupFunc
@@ -74,7 +74,7 @@ func init() {
 	l.WithName("testenv")
 	logf.SetLogger(l)
 
-	flag.StringVar(&specifiedLicenseFilePath, "license-file", "" , "Enterprise license file to use")
+	flag.StringVar(&specifiedLicenseFilePath, "license-file", "", "Enterprise license file to use")
 	flag.StringVar(&specifiedOperatorImage, "operator-image", defaultOperatorImage, "Splunk Operator image to use")
 	flag.StringVar(&specifiedSplunkImage, "splunk-image", defaultSplunkImage, "Splunk Enterprise (splunkd) image to use")
 	flag.StringVar(&specifiedSparkImage, "spark-image", defaultSparkImage, "Spark image to use")
@@ -105,8 +105,8 @@ func NewTestEnv(name, operatorImage, splunkImage, sparkImage, licenseFilePath st
 		splunkImage:        splunkImage,
 		sparkImage:         sparkImage,
 		skipTeardown:       specifiedSkipTeardown,
-		licenseCMName:		"cm-" + name,
-		licenseFilePath:	licenseFilePath,
+		licenseCMName:      "cm-" + name,
+		licenseFilePath:    licenseFilePath,
 	}
 
 	testenv.Log = logf.Log.WithValues("testenv", testenv.name)
@@ -414,7 +414,7 @@ func (testenv *TestEnv) createLicenseConfigMap() error {
 	lic, err := newLicenseConfigMap(testenv.licenseCMName, testenv.namespace, testenv.licenseFilePath)
 	if err != nil {
 		return err
-	}	
+	}
 	if err := testenv.GetKubeClient().Create(context.TODO(), lic); err != nil {
 		testenv.Log.Error(err, "Unable to create license configmap")
 		return err
@@ -428,11 +428,9 @@ func (testenv *TestEnv) createLicenseConfigMap() error {
 		}
 		return nil
 	})
-	
+
 	return nil
 }
-
-
 
 // NewDeployment creates a new deployment
 func (testenv *TestEnv) NewDeployment(name string) (*Deployment, error) {

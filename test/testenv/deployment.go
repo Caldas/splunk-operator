@@ -5,9 +5,9 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	wait "k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"k8s.io/apimachinery/pkg/runtime"
 
 	enterprisev1 "github.com/splunk/splunk-operator/pkg/apis/enterprise/v1alpha2"
 )
@@ -81,6 +81,17 @@ func (d *Deployment) GetStandalone(name string) (*enterprisev1.Standalone, error
 	return standalone, nil
 }
 
+// GetInstance retrieves the standalone, indexer, searchhead, licensemaster instance
+func (d *Deployment) GetInstance(name string, instance runtime.Object) error {
+	key := client.ObjectKey{Name: name, Namespace: d.testenv.namespace}
+
+	err := d.testenv.GetKubeClient().Get(context.TODO(), key, instance)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 //DeployLicenseMaster deploys the license master instance
 func (d *Deployment) DeployLicenseMaster(name string) (*enterprisev1.LicenseMaster, error) {
 
@@ -107,7 +118,7 @@ func (d *Deployment) DeployIndexerCluster(name, licenseMasterName string, count 
 }
 
 // DeploySearchHeadCluster deploys a search head cluster
-func (d* Deployment) DeploySearchHeadCluster(name, indexerClusterName, licenseMasterName string) (*enterprisev1.SearchHeadCluster, error) {
+func (d *Deployment) DeploySearchHeadCluster(name, indexerClusterName, licenseMasterName string) (*enterprisev1.SearchHeadCluster, error) {
 	indexer := newSearchHeadCluster(name, d.testenv.namespace, indexerClusterName, licenseMasterName)
 	deployed, err := d.deployCR(name, indexer)
 	return deployed.(*enterprisev1.SearchHeadCluster), err
@@ -120,7 +131,7 @@ func (d *Deployment) deployCR(name string, cr runtime.Object) (runtime.Object, e
 		return nil, err
 	}
 
-	// Push the clean up func to delete the cr when done 
+	// Push the clean up func to delete the cr when done
 	d.pushCleanupFunc(func() error {
 		d.testenv.Log.Info("Deleting cr", "name", name)
 		err := d.testenv.GetKubeClient().Delete(context.TODO(), cr)
@@ -161,4 +172,27 @@ func (d *Deployment) deployCR(name string, cr runtime.Object) (runtime.Object, e
 	}
 
 	return cr, nil
+}
+
+// DeployCluster deploys a lm, indexer and sh clusters
+func (d *Deployment) DeployCluster(name string) error {
+
+	// Deploy the license master
+	_, err := d.DeployLicenseMaster(name)
+	if err != nil {
+		return err
+	}
+
+	// Deploy the indexer cluster
+	d.DeployIndexerCluster(name, name, 3)
+	if err != nil {
+		return err
+	}
+
+	d.DeploySearchHeadCluster(name, name, name)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
